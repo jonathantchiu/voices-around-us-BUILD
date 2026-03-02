@@ -9,6 +9,7 @@ import { colors, fonts, TAG_COLORS } from '../theme';
 import { TagPill } from '../components/TagPill';
 import { useAuth } from '../hooks/useAuth';
 import { getStory, getReplies, postReply, toggleResonate } from '../hooks/useStories';
+import { supabase } from '../config/supabase';
 
 function timeAgo(ts) {
   const s = Math.floor((Date.now() - new Date(ts)) / 1000);
@@ -42,14 +43,51 @@ export default function StoryViewScreen({ route, navigation }) {
   const [audioBusy, setAudioBusy] = useState(false);
   const [audioDurationMs, setAudioDurationMs] = useState(0);
   const [audioPositionMs, setAudioPositionMs] = useState(0);
+  const [retryingTranscript, setRetryingTranscript] = useState(false);
   const soundRef = useRef(null);
+  const transcriptPollRef = useRef(null);
 
   useEffect(() => {
     loadData();
     return () => {
+      if (transcriptPollRef.current) clearInterval(transcriptPollRef.current);
       unloadAudio();
     };
   }, [storyId]);
+
+  useEffect(() => {
+    const shouldPoll = story?.audio_url
+      && (story.transcription_status === 'pending' || story.transcription_status === 'processing');
+
+    if (!shouldPoll) {
+      if (transcriptPollRef.current) {
+        clearInterval(transcriptPollRef.current);
+        transcriptPollRef.current = null;
+      }
+      return undefined;
+    }
+
+    if (transcriptPollRef.current) clearInterval(transcriptPollRef.current);
+
+    transcriptPollRef.current = setInterval(async () => {
+      const { data } = await getStory(storyId);
+      if (!data) return;
+      setStory(data);
+      setResonateCount(data.resonates || 0);
+
+      if (data.transcription_status === 'done' || data.transcription_status === 'failed') {
+        clearInterval(transcriptPollRef.current);
+        transcriptPollRef.current = null;
+      }
+    }, 3500);
+
+    return () => {
+      if (transcriptPollRef.current) {
+        clearInterval(transcriptPollRef.current);
+        transcriptPollRef.current = null;
+      }
+    };
+  }, [storyId, story?.audio_url, story?.transcription_status]);
 
   function onPlaybackStatusUpdate(status) {
     if (!status.isLoaded) return;
@@ -146,6 +184,34 @@ export default function StoryViewScreen({ route, navigation }) {
     setReplies(replyData);
   }
 
+  async function handleRetryTranscription() {
+    if (!story?.audio_url || retryingTranscript) return;
+    setRetryingTranscript(true);
+    try {
+      await supabase
+        .from('stories')
+        .update({ transcription_status: 'pending', transcription_error: null })
+        .eq('id', story.id);
+
+      const { error } = await supabase.functions.invoke('transcribe-story-audio', {
+        body: { storyId: story.id, audioUrl: story.audio_url },
+      });
+
+      if (error) {
+        await supabase
+          .from('stories')
+          .update({
+            transcription_status: 'failed',
+            transcription_error: (error.message || 'Could not start transcription.').slice(0, 500),
+          })
+          .eq('id', story.id);
+      }
+      await loadData();
+    } finally {
+      setRetryingTranscript(false);
+    }
+  }
+
   if (loading || !story) {
     return (
       <View style={styles.loadingWrap}>
@@ -221,12 +287,33 @@ export default function StoryViewScreen({ route, navigation }) {
                   <Text style={styles.transcriptLabel}>TRANSCRIPT</Text>
                   <ActivityIndicator color={colors.amber} size="small" style={{ marginTop: 4 }} />
                   <Text style={styles.transcriptPending}>Transcribing audio…</Text>
+                  <TouchableOpacity
+                    style={[styles.retryBtn, retryingTranscript && { opacity: 0.6 }]}
+                    onPress={handleRetryTranscription}
+                    disabled={retryingTranscript}
+                  >
+                    <Text style={styles.retryBtnText}>
+                      {retryingTranscript ? 'Retrying…' : 'Retry transcription'}
+                    </Text>
+                  </TouchableOpacity>
                 </View>
               )}
               {story.transcription_status === 'failed' && (
                 <View style={styles.transcriptWrap}>
                   <Text style={styles.transcriptLabel}>TRANSCRIPT</Text>
                   <Text style={styles.transcriptFailed}>Transcription unavailable</Text>
+                  {!!story.transcription_error && (
+                    <Text style={styles.transcriptErrorText}>{story.transcription_error}</Text>
+                  )}
+                  <TouchableOpacity
+                    style={[styles.retryBtn, retryingTranscript && { opacity: 0.6 }]}
+                    onPress={handleRetryTranscription}
+                    disabled={retryingTranscript}
+                  >
+                    <Text style={styles.retryBtnText}>
+                      {retryingTranscript ? 'Retrying…' : 'Retry transcription'}
+                    </Text>
+                  </TouchableOpacity>
                 </View>
               )}
               {!!story.body?.trim() && (
@@ -651,5 +738,27 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontFamily: fonts.sans,
     fontStyle: 'italic',
+  },
+  transcriptErrorText: {
+    marginTop: 8,
+    fontSize: 12,
+    color: colors.danger,
+    fontFamily: fonts.sans,
+    lineHeight: 18,
+  },
+  retryBtn: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+    backgroundColor: colors.amberLight,
+    borderWidth: 1,
+    borderColor: colors.amber,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  retryBtnText: {
+    color: colors.amber,
+    fontSize: 12,
+    fontFamily: fonts.sansSemiBold,
   },
 });

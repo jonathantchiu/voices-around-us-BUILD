@@ -80,6 +80,8 @@ export async function submitStory({
     emoji: emoji || '🌱',
     author_name: isAnonymous ? null : authorName,
     audio_url: audioUrl || null,
+    transcription_status: audioUrl ? 'pending' : null,
+    transcription_error: null,
   }).select('id').single();
   return { data, error };
 }

@@ -186,7 +186,26 @@ export default function SubmitScreen({ navigation }) {
     if (audioUrl && insertedRow?.id) {
       supabase.functions.invoke('transcribe-story-audio', {
         body: { storyId: insertedRow.id, audioUrl },
-      }).catch(() => {});
+      }).then(({ error: fnErr }) => {
+        if (!fnErr) return;
+        supabase
+          .from('stories')
+          .update({
+            transcription_status: 'failed',
+            transcription_error: (fnErr.message || 'Could not start transcription.').slice(0, 500),
+          })
+          .eq('id', insertedRow.id)
+          .catch(() => {});
+      }).catch((fnErr) => {
+        supabase
+          .from('stories')
+          .update({
+            transcription_status: 'failed',
+            transcription_error: (fnErr?.message || 'Could not start transcription.').slice(0, 500),
+          })
+          .eq('id', insertedRow.id)
+          .catch(() => {});
+      });
     }
 
     setSubmitted(true);

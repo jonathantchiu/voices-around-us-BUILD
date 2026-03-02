@@ -1,0 +1,4 @@
+project_id = "dfrlccjeywtecoadnglt"
+
+[functions.transcribe-story-audio]
+verify_jwt = false
